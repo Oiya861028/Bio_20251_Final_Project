@@ -13,33 +13,23 @@ echo: False
 # import packages
 library(readxl)
 library(tidyverse)
-library(writexl)
+library(writexl) 
 library(ggthemes)
-
-```
-
-```{r}
-#| output: False
-
-# Installing deseq2
-if (!require("BiocManager", quietly = TRUE)) {
-    install.packages("BiocManager")
-}
-
-BiocManager::install("DESeq2")
-
+library(DESeq2)
+library(reshape2)
+library(edgeR)
 ```
 
 Loading in the Data
 
 ```{r}
-gene_expression <- read_excel("/Users/yubin/Documents/School/Bio Stuff/Bios_20151/Final Project/B-Cell Gene Expression Data.xlsx", col_types = c("text", "text", "skip", "skip", rep("numeric", 18)))
-view(gene_expression)
+gene_expression <- read_excel("../B_Cell_Gene_Expression_Data.xlsx",  col_types = c("text", "skip", "skip", "skip", rep("numeric", 18)))
+gene_expression <- column_to_rownames(gene_expression, "GeneSymbol")
 ```
 
-## Creating a Simple Visual Plot comparing day0 and day1 genetic concentration 
+## Creating a Simple Visual Plot comparing day0 and day1 genetic concentration
 
-```{r}
+```{r eval=FALSE}
 #| title: "Simple Plot"
 #| fig-cap: "We see a more of a dip in the B-cell gene expression level after 24 hours compare to none b-cell genes"
 
@@ -50,8 +40,52 @@ ggplot(gene_expression, aes(x = s1_Apheresis_day0, y = s1_Apheresis_day1)) +
   
 ```
 
-## Deseq2
+## Metadata dataframe for gene_expression
 
 ```{r}
+# Create the metadata dataframe
+colData <- data.frame(
+  row.names = colnames(gene_expression),
+  Sample = factor(rep(c(1,2,3),times=6)),
+  Day = factor(rep(c("Day0","Day1","Day2"), each = 3, times = 2)),
+  Condition = factor(rep(c("Apheresis", "Control"), each = 9))
+  
 )
+
+# A column for two factor combinations 
+colData$Condition_Day <- factor(paste0(colData$Condition, "_", colData$Day))
+colData$Sample_Day <- factor(paste0(colData$Sample, "_", colData$Day))
+colData$Sample_Condition <-  factor(paste0(colData$Sample, "_", colData$Condition))
+
+# Explicitly set Control and Day1 as the baseline references
+colData$Condition <- relevel(colData$Condition, ref = "Control")
+colData$Day <- relevel(colData$Day, ref = "Day1")
+
+# Combining everything into one dataframe
+x <- DGEList(gene_expression, samples = colData)
+```
+
+Since we don't have raw count, and that we have multiple conditions that
+
+Using Limma instead since we don't have raw data, and Deseq2 only take raw data
+
+```{r}
+library(limma)
+library(Glimma) 
+# unsupervised Clustering plot to see if the grouping on PCA space make sense. RUN THIS TO GET A FEEL OF THE DATA AND SEE IF ANY BATCH CORRECTIONS ARE NESSESARY
+glMDSPlot(x, group = x$samples)
+
+```
+
+Creating Design matrix for both day and condition.
+
+```{r}
+Condition <- x$samples$Condition
+Day <- x$samples$Day
+design <- model.matrix(~Condition*Day)
+colnames(design) <- gsub("DayDay", "Day", colnames(design))
+design 
+#The columns are summarized as the following:
+# Intercept | ConditionApheresis | Day0 | Day2 | CondAph:Day0 | CondAph:Day2
+# unbound intercept | 0 for control | * |  * | Combinations 
 ```
