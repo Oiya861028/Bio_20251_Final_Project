@@ -1,0 +1,57 @@
+---
+title: "Deseq analysis comparing between days of gene expression"
+author: "Yubin Xie"
+format: 
+  html:
+    self-contained: true
+editor: visual
+echo: False
+---
+
+```{r setup}
+#| output: False
+# import packages
+library(readxl)
+library(tidyverse)
+library(writexl)
+library(ggthemes)
+
+```
+
+```{r}
+#| output: False
+
+# Installing deseq2
+if (!require("BiocManager", quietly = TRUE)) {
+    install.packages("BiocManager")
+}
+
+BiocManager::install("DESeq2")
+
+```
+
+Loading in the Data
+
+```{r}
+gene_expression <- read_excel("/Users/yubin/Documents/School/Bio Stuff/Bios_20151/Final Project/B-Cell Gene Expression Data.xlsx", col_types = c("text", "text", "skip", "skip", rep("numeric", 18)))
+view(gene_expression)
+```
+
+## Creating a Simple Visual Plot comparing day0 and day1 genetic concentration 
+
+```{r}
+#| title: "Simple Plot"
+#| fig-cap: "We see a more of a dip in the B-cell gene expression level after 24 hours compare to none b-cell genes"
+
+ggplot(gene_expression, aes(x = s1_Apheresis_day0, y = s1_Apheresis_day1)) +
+  geom_point(aes(color=Is_B_Cell)) + geom_smooth(method='lm') +
+  labs(title = "Gene Expression", subtitle = "More words", x="Day0 for patient one", y= "Day1 for patient one")
+  scale_color_colorblind()
+  
+```
+
+## Deseq2
+
+```{r}
+)
+```
