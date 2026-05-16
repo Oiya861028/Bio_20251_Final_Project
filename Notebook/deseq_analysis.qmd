@@ -57,9 +57,9 @@ colData$Condition_Day <- factor(paste0(colData$Condition, "_", colData$Day))
 colData$Sample_Day <- factor(paste0(colData$Sample, "_", colData$Day))
 colData$Sample_Condition <-  factor(paste0(colData$Sample, "_", colData$Condition))
 
-# Explicitly set Control and Day1 as the baseline references
+# Explicitly set Control and Day0 as the baseline references
 colData$Condition <- relevel(colData$Condition, ref = "Control")
-colData$Day <- relevel(colData$Day, ref = "Day1")
+colData$Day <- relevel(colData$Day, ref = "Day0")
 
 # Combining everything into one dataframe
 x <- DGEList(gene_expression, samples = colData)
@@ -80,12 +80,51 @@ glMDSPlot(x, group = x$samples)
 Creating Design matrix for both day and condition.
 
 ```{r}
-Condition <- x$samples$Condition
+Condition_Day <- x$samples$Condition_Day
 Day <- x$samples$Day
-design <- model.matrix(~Condition*Day)
+design <- model.matrix(~Condition_Day)
+colnames(design) <- gsub("Condition_Day", "", colnames(design))
 colnames(design) <- gsub("DayDay", "Day", colnames(design))
-design 
+
+view(design)
 #The columns are summarized as the following:
 # Intercept | ConditionApheresis | Day0 | Day2 | CondAph:Day0 | CondAph:Day2
 # unbound intercept | 0 for control | * |  * | Combinations 
 ```
+
+Contrast matrix
+
+```{r}
+contr.matrix <- makeContrasts(
+  Apheresis_Day2vsDay1 = Apheresis_Day2 - Apheresis_Day1, 
+  Apheresis_Day1vsDay0 = Apheresis_Day1 - Apheresis_Day0, 
+  Apheresis_Day2vsDay0 = Apheresis_Day2 - Apheresis_Day0, 
+  Control_Day2vsDay1 = Control_Day2 - Control_Day1,
+  Control_Day1vsDay0 = Control_Day1,
+  Control_Day2vsDay0 = Control_Day2,
+  Apheresis_Day0vsControl_Day0 = Apheresis_Day0,
+  Apheresis_Day1vsControl_Day1 = Apheresis_Day1 - Control_Day1,
+  Apheresis_Day2vsControl_Day2 = Apheresis_Day2 - Control_Day2,
+  levels=colnames(design)
+)
+contr.matrix
+```
+
+```{r}
+v <- voom(x, design, plot=TRUE)
+v
+```
+
+```{r}
+vfit <- lmFit(v, design)
+vfit <- contrasts.fit(vfit, contrasts=contr.matrix) 
+efit <- eBayes(vfit) 
+plotSA(efit)
+```
+
+```{r}
+# Summary of deg genes
+summary(decideTests(efit))
+```
+
+TODO: Conversion to a single factor: Make Combined Design of condition and day (ie use Condition_Day).
