@@ -96,9 +96,9 @@ Contrast matrix
 
 ```{r}
 contr.matrix <- makeContrasts(
-  Apheresis_Day2vsDay1 = Apheresis_Day2 - Apheresis_Day1, 
-  Apheresis_Day1vsDay0 = Apheresis_Day1 - Apheresis_Day0, 
-  Apheresis_Day2vsDay0 = Apheresis_Day2 - Apheresis_Day0, 
+  Apheresis_Day2vsDay1 = Apheresis_Day2 - Apheresis_Day1,
+  Apheresis_Day1vsDay0 = Apheresis_Day1 - Apheresis_Day0,
+  Apheresis_Day2vsDay0 = Apheresis_Day2 - Apheresis_Day0,
   Control_Day2vsDay1 = Control_Day2 - Control_Day1,
   Control_Day1vsDay0 = Control_Day1,
   Control_Day2vsDay0 = Control_Day2,
@@ -111,20 +111,48 @@ contr.matrix
 ```
 
 ```{r}
-v <- voom(x, design, plot=TRUE)
+v <- voom(x, design, normalize.method = "none", plot=TRUE)
 v
 ```
 
 ```{r}
-vfit <- lmFit(v, design)
-vfit <- contrasts.fit(vfit, contrasts=contr.matrix) 
-efit <- eBayes(vfit) 
+vfit <- lmFit(x$counts, design)
+vfit <- contrasts.fit(vfit, contrast = contr.matrix) 
+efit <- eBayes(vfit, trend = TRUE) 
 plotSA(efit)
+
+```
+
+```{r}
+top_genes <- topTable(efit, coef = "Apheresis_Day0vsControl_Day0", adjust.method = "BH", number = Inf)
+significant_top_genes <- top_genes[top_genes$adj.P.Val < 0.05 & top_genes$logFC > 1,]
+print(significant_top_genes)
+write_xlsx(cbind(Index = rownames(significant_top_genes), significant_top_genes), "~/Documents/School/Bio Stuff/Bios_20151/Bio_20251_Final_Project/Output_plot/Apheresis_Day0vsControl_Day0_Deg_Up.xlsx")
 ```
 
 ```{r}
 # Summary of deg genes
-summary(decideTests(efit))
+up_genes <- efit$genes[decideTests(efit)[, "Apheresis_Day0vsControl_Day0"] == 1, ]
+print(up_genes)
+```
+
+```{r}
+volcanoplot(efit, coef = c(1), style = "p-value", highlight = 0, names = efit$genes$ID, hl.col="blue",
+            xlab = "Log2 Fold Change", ylab = NULL, pch=16, cex=0.35)
+abline(1,0, col = "red")
+abline(0,-2, col= "blue")
+abline(0,2, col= "blue")
+
+```
+
+```{r}
+tfit <- treat(vfit, lfc=1)
+dt <- decideTests(tfit)
+summary(dt)
+```
+
+```{r}
+glMDPlot(tfit, coef=1, status=de, main=colnames(efit)[1], side.main="ENTREZID", launch=TRUE)
 ```
 
 TODO: Conversion to a single factor: Make Combined Design of condition and day (ie use Condition_Day).
