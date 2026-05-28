@@ -40,6 +40,14 @@ ggplot(gene_expression, aes(x = s1_Apheresis_day0, y = s1_Apheresis_day1)) +
   
 ```
 
+## Checking if Data is Already Log2p Transformed
+
+```{r}
+hist(as.numeric(gene_expression[1,]))
+qqnorm(as.numeric(gene_expression[1,]))
+qqline(as.numeric(gene_expression[1, ]))
+```
+
 ## Metadata dataframe for gene_expression
 
 ```{r}
@@ -65,7 +73,15 @@ colData$Day <- relevel(colData$Day, ref = "Day0")
 x <- DGEList(gene_expression, samples = colData)
 ```
 
-Since we don't have raw count, and that we have multiple conditions that
+Since we don't have raw count, we can not use voom. We will try to log transform it ourself
+
+```{r}
+exprs_data <- as.matrix(x$counts)
+if(max(exprs_data, na.rm=TRUE) > 50) {
+  exprs_data <- log2(exprs_data + 1)
+}
+
+```
 
 Using Limma instead since we don't have raw data, and Deseq2 only take raw data
 
@@ -73,7 +89,7 @@ Using Limma instead since we don't have raw data, and Deseq2 only take raw data
 library(limma)
 library(Glimma) 
 # unsupervised Clustering plot to see if the grouping on PCA space make sense. RUN THIS TO GET A FEEL OF THE DATA AND SEE IF ANY BATCH CORRECTIONS ARE NESSESARY
-glMDSPlot(x, group = x$samples)
+glMDSPlot(exprs_data, group = x$samples)
 
 ```
 
