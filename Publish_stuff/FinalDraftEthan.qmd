@@ -1,0 +1,497 @@
+---
+title: "Comparing B-Cell Gene Expression Profiles From Different Source Materials and Over Time"
+author: "Andrea Montalvo Rodriguez, Avery Anderson, Ethan Deitcher, and Yubin Xie"
+format: 
+  html:
+    self-contained: true
+editor: visual
+---
+
+```{r setup}
+#| include: false
+library(tidyverse)
+```
+
+## Summary
+
+This project investigated whether the apheresis isolation procedure alters B-cell gene expression compared to whole blood, whether those differences change over time, and whether the upregulated genes cluster into specific functional groups. A paired t-test across Day 0, Day 1, and Day 2 identified 329, 810, and 471 significantly upregulated genes respectively, with the peak at 24 hours post-apheresis. A limma cross-validation at Day 0 returned 21 strong hits, five of which overlapped with the t-test results (CD9, ENG, THOC7, PACSIN2, MTHFS). The upregulated genes clustered into four functional themes: proliferation, metabolism, membrane signaling and activation, and ER stress with B-cell developmental regulation. CD9 and ENG were significant at all three time points, indicating that apheresis induces a coordinated B-cell activation program that peaks at 24 hours and partially regresses by 48 hours.
+
+Andrea Montalvo Rodriguez \_\_\_\_; Avery Anderson \_\_\_\_; Ethan Deitcher cleaned and processed the data, visualized the data through volcano plots, and analyzed the data subsets through Wilcoxon Rank-Sum tests; Yubin Xie: Limma set up with normalized data, design and contrast matrix, linear regression, and GO term analysis.
+
+## Data preparation
+
+```{r}
+library(readxl)
+B_Cell_Gene_Expression_Data <- read_excel("~/Desktop/BIOS20151/Final/B-Cell Gene Expression Data.xlsx", 
+  col_types = c("text", "text", "text", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric"))
+loc <- read_excel("~/Desktop/BIOS20151/Final/SubCell.xlsx")
+pro <- read_excel("~/Desktop/BIOS20151/Final/ProtFunc.xlsx")
+```
+
+There are two types of data: the 18 gene expression profiles (all the permutations of source material, day, and subject) and categorical data, including the sub-cellular location and functions of the gene product, and whether the gene is associated with B-cells.
+
+The aim was to visualize the gene expression data through volcano plots. Accordingly, the gene expression profiles of the three subjects had to be averaged to determine the log 2 fold-change. After creating some organizational variables, the data is transferred from the Excel spreadsheet into variables which indicate source material (ap = apheresis product; wb = whole blood), the day (D0 = day 0; D1 = day 1; D2 = day 2), and the subject (s1 = subject 1; s2 = subject 2; s3 = subject 3).
+
+```{r}
+#Organizational Variables
+genes = 1:8725 # The total number of genes
+codes = B_Cell_Gene_Expression_Data$GeneSymbol # The alphabetical list of all the genes
+
+#Individual Expression Profiles
+apD0s1 = B_Cell_Gene_Expression_Data$s1_Apheresis_day0
+apD0s2 = B_Cell_Gene_Expression_Data$s2_Apheresis_day0
+apD0s3 = B_Cell_Gene_Expression_Data$s3_Apheresis_day0
+apD1s1 = B_Cell_Gene_Expression_Data$s1_Apheresis_day1
+apD1s2 = B_Cell_Gene_Expression_Data$s2_Apheresis_day1
+apD1s3 = B_Cell_Gene_Expression_Data$s3_Apheresis_day1
+apD2s1 = B_Cell_Gene_Expression_Data$s1_Apheresis_day2
+apD2s2 = B_Cell_Gene_Expression_Data$s2_Apheresis_day2
+apD2s3 = B_Cell_Gene_Expression_Data$s3_Apheresis_day2
+wbD0s1 = B_Cell_Gene_Expression_Data$s1_WholeBlood_day0
+wbD0s2 = B_Cell_Gene_Expression_Data$s2_WholeBlood_day0
+wbD0s3 = B_Cell_Gene_Expression_Data$s3_WholeBlood_day0
+wbD1s1 = B_Cell_Gene_Expression_Data$s1_WholeBlood_day1
+wbD1s2 = B_Cell_Gene_Expression_Data$s2_WholeBlood_day1
+wbD1s3 = B_Cell_Gene_Expression_Data$s3_WholeBlood_day1
+wbD2s1 = B_Cell_Gene_Expression_Data$s1_WholeBlood_day2
+wbD2s2 = B_Cell_Gene_Expression_Data$s2_WholeBlood_day2
+wbD2s3 = B_Cell_Gene_Expression_Data$s3_WholeBlood_day2
+```
+
+The 18 gene expression profiles were averaged across subjects, resulting in six average gene expression profiles.
+
+```{r}
+#Average Expression Profiles
+apD0 = (apD0s1 + apD0s2 + apD0s3)/3
+apD1 = (apD1s1 + apD1s2 + apD1s3)/3
+apD2 = (apD2s1 + apD2s2 + apD2s3)/3
+wbD0 = (wbD0s1 + wbD0s2 + wbD0s3)/3
+wbD1 = (wbD1s1 + wbD1s2 + wbD1s3)/3
+wbD2 = (wbD2s1 + wbD2s2 + wbD2s3)/3
+```
+
+The categorical data was acquired from Metascape, a gene annotation tool. Each of the 8725 genes had a list of primary sub-cellular locations and protein functions. Through Excel, these lists were transformed into binary outputs, where a 1 represents a gene product being in a specific location or having a specific function. Below shows the assignment of the sub-cellular location data to the datafame entitled locations, and the protein function data to functions. The B-cell association list is similar, in that it indicates through a binary system which genes are uniquely associated with B-cells.
+
+```{r}
+
+#B-cell Association
+
+bcell = B_Cell_Gene_Expression_Data$`B-Cell?`
+
+#Sub-Cellular Locations
+locations <- list(
+  acrosome = loc$Acrosome,
+  actin_filaments = loc$`Actin filaments`,
+  aggresome = loc$Aggresome,
+  annulus = loc$Annulus,
+  basal_body = loc$`Basal body`,
+  calyx = loc$Calyx,
+  cell_junctions = loc$`Cell Junctions`,
+  centriolar_satellite = loc$`Centriolar satellite`,
+  centrosome = loc$Centrosome,
+  cleavage_furrow = loc$`Cleavage furrow`,
+  connecting_piece = loc$`Connecting piece`,
+  cytokinetic_bridge = loc$`Cytokinetic bridge`,
+  cytoplasmic_bodies = loc$`Cytoplasmic bodies`,
+  cytosol = loc$Cytosol,
+  end_piece = loc$`End piece`,
+  endoplasmic_reticulum = loc$`Endoplasmic reticulum`,
+  endosomes = loc$Endosomes,
+  equatorial_segment = loc$`Equatorial segment`,
+  flagellar_centriole = loc$`Flagellar centriole`,
+  focal_adhesion_sites = loc$`Focal adhesion sites`,
+  golgi_apparatus = loc$`Golgi apparatus`,
+  intermediate_filaments = loc$`Intermediate filaments`,
+  kinetochore = loc$Kinetochore,
+  lipid_droplets = loc$`Lipid droplets`,
+  lysosomes = loc$Lysosomes,
+  microtubule_ends = loc$`Microtubule ends`,
+  microtubules = loc$Microtubules,
+  mid_piece = loc$`Mid piece`,
+  midbody = loc$Midbody,
+  midbody_ring = loc$`Midbody ring`,
+  mitochondria = loc$Mitochondria,
+  mitotic_chromosome = loc$`Mitotic chromosome`,
+  mitotic_spindle = loc$`Mitotic spindle`,
+  nuclear_bodies = loc$`Nuclear bodies`,
+  nuclear_membrane = loc$`Nuclear membrane`,
+  nuclear_speckles = loc$`Nuclear speckles`,
+  nucleoli = loc$Nucleoli,
+  nucleoli_fibrillar_center = loc$`Nucleoli fibrillar center`,
+  nucleoli_rim = loc$`Nucleoli rim`,
+  nucleoplasm = loc$Nucleoplasm,
+  perinuclear_theca = loc$`Perinuclear theca`,
+  peroxisomes = loc$Peroxisomes,
+  plasma_membrane = loc$`Plasma membrane`,
+  primary_cilium = loc$`Primary cilium`,
+  primary_cilium_tip = loc$`Primary cilium tip`,
+  primary_cilium_transition_zone = loc$`Primary cilium transition zone`,
+  principal_piece = loc$`Principal piece`,
+  rods_and_rings = loc$`Rods & Rings`,
+  vesicles = loc$Vesicles
+)
+
+#Protein Functions
+functions <- list(
+  predicted_intracellular_proteins = pro$`Predicted intracellular proteins`,
+  disease_related_genes = pro$`Disease related genes`,
+  enzymes = pro$Enzymes,
+  potential_drug_targets = pro$`Potential drug targets`,
+  enzyme_transferases = pro$`ENZYME proteins:Transferases`,
+  enzyme_hydrolases = pro$`ENZYME proteins:Hydrolases`,
+  tf_zinc_coordinating = pro$`Transcription factors:Zinc-coordinating DNA-binding domains`,
+  candidate_cancer_biomarkers = pro$`Cancer-related genes:Candidate cancer biomarkers`,
+  congenital_malformations_other = pro$`Human disease related genes:Congenital malformations:Other congenital malformations`,
+  predicted_secreted_proteins = pro$`Predicted secreted proteins`,
+  transporter_channels_pores = pro$`Transporters:Transporter channels and pores`,
+  fda_approved_drug_targets = pro$`FDA approved drug targets:Small molecule drugs`,
+  congenital_malformations_nervous_system = pro$`Human disease related genes:Congenital malformations:Congenital malformations of the nervous system`,
+  electrochemical_transporters = pro$`Transporters:Electrochemical Potential-driven transporters`,
+  transporter_accessory_factors = pro$`Transporters:Accessory Factors Involved in Transport`,
+  mutational_cancer_driver_genes = pro$`Cancer-related genes:Mutational cancer driver genes`,
+  enzyme_oxidoreductases = pro$`ENZYME proteins:Oxidoreductases`,
+  transporters = pro$Transporters,
+  neurodegenerative_diseases = pro$`Human disease related genes:Nervous system diseases:Neurodegenerative diseases`,
+  mitochondrial_diseases = pro$`Human disease related genes:Congenital disorders of metabolism:Mitochondrial diseases`,
+  cancer_related_genes = pro$`Cancer-related genes`,
+  ribosomal_proteins = pro$`Ribosomal proteins`,
+  mutated_cancer_genes = pro$`Cancer-related genes:Mutated cancer genes`,
+  mental_behavioural_disorders = pro$`Human disease related genes:Other diseases:Mental and behavioural disorders`,
+  primary_active_transporters = pro$`Transporters:Primary Active Transporters`,
+  enzyme_ligases = pro$`ENZYME proteins:Ligase`,
+  enzyme_lyases = pro$`ENZYME proteins:Lyases`,
+  tf_helix_turn_helix = pro$`Transcription factors:Helix-turn-helix domains`,
+  atypical_kinases = pro$`Kinases:Atypical kinases`,
+  metallopeptidases = pro$`Peptidases:Metallopeptidases`,
+  cd_markers = pro$`CD markers`,
+  ras_pathway_related = pro$`RAS pathway related proteins`,
+  amino_acid_metabolism = pro$`Human disease related genes:Congenital disorders of metabolism:Congenital disorders of amino acid metabolism`,
+  hematologic_diseases = pro$`Human disease related genes:Cardiovascular diseases:Hematologic diseases`,
+  eye_disease = pro$`Human disease related genes:Nervous system diseases:Eye disease`,
+  lipid_metabolism_disorders = pro$`Human disease related genes:Congenital disorders of metabolism:Congenital disorders of lipid/glycolipid metabolism`,
+  skin_malformations = pro$`Human disease related genes:Congenital malformations:Congenital malformations of skin`,
+  tyr_kinases = pro$`Kinases:Tyr protein kinases`,
+  epilepsy = pro$`Human disease related genes:Nervous system diseases:Epilepsy`,
+  glycan_metabolism_disorders = pro$`Human disease related genes:Congenital disorders of metabolism:Congenital disorders of glycan/glycoprotein metabolism`,
+  agc_kinases = pro$`Kinases:AGC Ser/Thr protein kinases`,
+  hematopoietic_cancers = pro$`Human disease related genes:Cancers:Cancers of haematopoietic and lymphoid tissues`,
+  digestive_cancers = pro$`Human disease related genes:Cancers:Cancers of the digestive system`,
+  breast_female_cancers = pro$`Human disease related genes:Cancers:Cancers of the breast and female genital organs`,
+  sensory_system_diseases = pro$`Human disease related genes:Nervous system diseases:Other nervous and sensory system diseases`,
+  other_metabolic_disorders = pro$`Human disease related genes:Congenital disorders of metabolism:Other congenital disorders of metabolism`,
+  eye_malformations = pro$`Human disease related genes:Congenital malformations:Congenital malformations of eye`,
+  primary_immunodeficiency = pro$`Human disease related genes:Immune system diseases:Primary immunodeficiency`,
+  musculoskeletal_malformations = pro$`Human disease related genes:Congenital malformations:Congenital malformations of the musculoskeletal system`,
+  nucleotide_metabolism_disorders = pro$`Human disease related genes:Congenital disorders of metabolism:Congenital disorders of nucleotide metabolism`,
+  cofactor_vitamin_disorders = pro$`Human disease related genes:Congenital disorders of metabolism:Congenital disorders of cofactor/vitamin metabolism`,
+  peroxisomal_diseases = pro$`Human disease related genes:Congenital disorders of metabolism:Peroxisomal diseases`,
+  lysosomal_storage_diseases = pro$`Human disease related genes:Congenital disorders of metabolism:Lysosomal storage diseases`,
+  vascular_diseases = pro$`Human disease related genes:Cardiovascular diseases:Vascular diseases`,
+  hypertensive_diseases = pro$`Human disease related genes:Cardiovascular diseases:Hypertensive diseases`,
+  cardiac_diseases = pro$`Human disease related genes:Cardiovascular diseases:Cardiac diseases`,
+  immune_system_diseases = pro$`Human disease related genes:Immune system diseases:Other immune system diseases`,
+  allergies_autoimmune = pro$`Human disease related genes:Immune system diseases:Allergies and autoimmune diseases`,
+  skin_soft_tissue = pro$`Human disease related genes:Skin diseases:Skin and soft tissue diseases`,
+  gastrointestinal_diseases = pro$`Human disease related genes:Digestive system diseases:Gastrointestinal diseases`,
+  liver_diseases = pro$`Human disease related genes:Digestive system diseases:Liver diseases`,
+  kidney_diseases = pro$`Human disease related genes:Urinary system diseases:Kidney diseases`,
+  skeletal_diseases = pro$`Human disease related genes:Musculoskeletal diseases:Skeletal diseases`,
+  muscular_diseases = pro$`Human disease related genes:Musculoskeletal diseases:Muscular diseases`,
+  other_musculoskeletal = pro$`Human disease related genes:Musculoskeletal diseases:Other musculoskeletal diseases`,
+  reproductive_diseases = pro$`Human disease related genes:Reproductive system diseases:Reproductive system diseases`,
+  diabetes = pro$`Human disease related genes:Endocrine and metabolic diseases:Diabetes`,
+  adrenal_diseases = pro$`Human disease related genes:Endocrine and metabolic diseases:Adrenal gland diseases`,
+  hypothalamus_pituitary = pro$`Human disease related genes:Endocrine and metabolic diseases:Hypothalamus and pituitary gland diseases`,
+  other_endocrine = pro$`Human disease related genes:Endocrine and metabolic diseases:Other endocrine and metabolic diseases`,
+  cns_cancers = pro$`Human disease related genes:Cancers:Cancers of eye, brain, and central nervous system`,
+  soft_tissue_bone_cancers = pro$`Human disease related genes:Cancers:Cancers of soft tissues and bone`,
+  male_genital_cancers = pro$`Human disease related genes:Cancers:Cancers of male genital organs`,
+  endocrine_cancers = pro$`Human disease related genes:Cancers:Cancers of endocrine organs`,
+  lung_pleura_cancers = pro$`Human disease related genes:Cancers:Cancers of the lung and pleura`,
+  head_neck_cancers = pro$`Human disease related genes:Cancers:Head and neck cancers`,
+  digestive_malformations = pro$`Human disease related genes:Congenital malformations:Congenital malformations of the digestive system`,
+  urinary_malformations = pro$`Human disease related genes:Congenital malformations:Congenital malformations of the urinary system`,
+  carbohydrate_metabolism = pro$`Human disease related genes:Congenital disorders of metabolism:Congenital disorders of carbohydrate metabolism`,
+  ion_transport_disorders = pro$`Human disease related genes:Congenital disorders of metabolism:Congenital disorders of ion transport and metabolism`,
+  chromosomal_abnormalities = pro$`Human disease related genes:Other congenital disorders:Chromosomal abnormalities`,
+  candidate_cardiovascular = pro$`Candidate cardiovascular disease genes`,
+  gpcrs = pro$`G-protein coupled receptors:GPCRs excl olfactory receptors`,
+  family2_gpcrs = pro$`G-protein coupled receptors:Family 2 (B) receptors`,
+  adenosine_receptors = pro$`G-protein coupled receptors:Adenosine and adenine nucleotide receptors`,
+  kinases = pro$Kinases,
+  tkl_kinases = pro$`Kinases:TKL Ser/Thr protein kinases`,
+  camk_kinases = pro$`Kinases:CAMK Ser/Thr protein kinases`,
+  cysteine_peptidases = pro$`Peptidases:Cysteine-type peptidases`,
+  aspartic_peptidases = pro$`Peptidases:Aspartic-type peptidases`,
+  tf_basic_domains = pro$`Transcription factors:Basic domains`,
+  tf_all_alpha_helical = pro$`Transcription factors:Other all-alpha-helical DNA-binding domains`,
+  citric_acid_cycle = pro$`Citric acid cycle related proteins`
+)
+```
+
+## Data description and visualization
+
+Volcano plots require two inputs: the log 2 fold-change of a gene's expression, and the -log 10 of the p-value from the paired t-test between the control (whole blood) and treatment (apheresis product) groups.
+
+Using the average gene expressions ascertained above, the apheresis expression profile can be divided by the whole blood profile for each gene. The log 2 of these raw fold-changes can the be calculated, and assigned to the log 2 fold change variables for each day.
+
+```{r}
+#Log 2 Fold-Change
+
+#Creating the variables
+l2fcD0 = numeric(length(genes))
+l2fcD1 = numeric(length(genes))
+l2fcD2 = numeric(length(genes))
+
+#Loop to create vectors of the log 2 fold-changes for each gene, for all three days
+for (i in genes){
+ l2fcD0[i] <- log2(apD0[i]/wbD0[i])
+ l2fcD1[i] <- log2(apD1[i]/wbD1[i])
+ l2fcD2[i] <- log2(apD2[i]/wbD2[i])
+}
+```
+
+Next, the p-values must be calculated, and then transformed. Using a paired t-test, the p-values for the difference between a gene's expression from whole blood-derived and apheresis-derived B-cells were collected. Notably, for a few genes, the data was "essentially constant," and so an error was reported; the tryCatch function was used to pass these genes. These p-values were then adjusted through False Discovery Rate (FDR) correction to raise statistical power. Lastly, the negative log10 of these values were calculated.
+
+```{r}
+#Creating the variables
+#Raw p-values from the paired t-tests
+pvD0 = numeric(length(genes))
+pvD1 = numeric(length(genes))
+pvD2 = numeric(length(genes))
+
+#Adjusted p-values (using FDR correction)
+apvD0 = numeric(length(genes))
+apvD1 = numeric(length(genes))
+apvD2 = numeric(length(genes))
+
+#Transformed (-log10) and adjusted p-values
+negapvD0 = numeric(length(genes))
+negapvD1 = numeric(length(genes))
+negapvD2 = numeric(length(genes))
+
+#Loop to conduct paired t-tests between the treatment and control group
+# P-value correction using the False Discovery Rates (FDR) method
+# Transformation of the p-values for the volcano plot, for all genes at all points in time
+for (i in genes){
+ pvD0[i] <- tryCatch(t.test(c(apD0s1[i], apD0s2[i], apD0s3[i]), c(wbD0s1[i], wbD0s2[i], wbD0s3[i]), paired = TRUE)$p.value, error = function(e) NA)
+ apvD0 <- p.adjust(pvD0, method = "fdr")
+ negapvD0[i] <- -log10(apvD0[i])
+ pvD1[i] <- tryCatch(t.test(c(apD1s1[i], apD1s2[i], apD1s3[i]), c(wbD1s1[i], wbD1s2[i], wbD1s3[i]), paired = TRUE)$p.value, error = function(e) NA)
+ apvD1 <- p.adjust(pvD1, method = "fdr")
+ negapvD1[i] <- -log10(apvD1[i])
+ pvD2[i] <- tryCatch(t.test(c(apD2s1[i], apD2s2[i], apD2s3[i]), c(wbD2s1[i], wbD2s2[i], wbD2s3[i]), paired = TRUE)$p.value, error = function(e) NA)
+ apvD2 <- p.adjust(pvD2, method = "fdr")
+ negapvD2[i] <- -log10(apvD2[i])
+}
+```
+
+The function volcano was created to create volcano plots which identify the total number of genes, significantly differentially expressed genes, significantly upregulated, and downregulated genes, as well as the percentage of genes which were differentially expressed. The function has inputs for the log 2 fold-change and p-values for each day, the title, and subsets. The subset portion stratifies the data for different sub-cellular locations and protein functions.
+
+```{r}
+
+#Significance and Substantial Thresholds
+pthresh = -log10(0.05) # 0.05 represents the significance threshhold of 0.05
+cthresh = 0.5 #0.5 represents the log 2 fold-change a gene must have to be substantially different
+
+#Volcano Plot Function
+volcano <- function(l2fc, pv, title, subset = NULL) {
+  
+  #Stratification Function
+  if (!is.null(subset)) {
+    subset <- as.logical(subset)
+    l2fc <- l2fc[subset]
+    pv <- pv[subset]
+    codes <- codes[subset]
+}
+  
+  #Determination of the total and percent of genes that are significantly different
+  sig <- length(codes[pv > pthresh])
+  sig_perc <- round(sig/length(codes)*100, 2)
+  
+  #Coloring the datapoints by quadrant
+  colors <- rep("black", length(genes))
+  colors[l2fc > cthresh & pv > pthresh] <- "blue" #Significantly Upregulated Genes
+  colors[l2fc < -cthresh & pv > pthresh] <- "red" #Significantly Down Genes
+  
+  #Volcano Plot Creation
+  plot(l2fc, pv, main = title, col = colors, xlab = "Log2FoldChange", ylab = "-logp", xlim = c(-2,2), ylim = c(0,7), cex.main = 2.5)
+  
+  #Legend with color assignment, total genes, total significant genes, and percent of genes that are significant
+  legend("topright", legend = c("Significantly Upregulated", "Significantly Downregulated", paste("Total Genes:", length(codes)), paste("Total Significant:", sig), paste("Percent Significant:", sig_perc, "%")), fill = c("blue", "red", "black", "black", "black"), pch(1,1,0,0,0))
+  
+  #Plot lines to demarcate quadrants
+  abline(v = -cthresh)
+  abline(v = cthresh)
+  abline(h = pthresh)
+  
+  #Lists of up and downregulated genes
+  print(strwrap(paste("Significantly and Substantially Upregulated Genes:", paste(codes[l2fc > cthresh & pv > pthresh], collapse = ", ")), width = 80))
+  print(strwrap(paste("Significantly and Substantially Downregulated Genes:", paste(codes[l2fc < -cthresh & pv > pthresh], collapse = ", ")), width = 80))
+}
+```
+
+Finally, the plots themselves. The first set of plots show all 8725 genes in each time period, and lists the significantly up and downregulated genes.
+
+```{r, fig.width=16, fig.height=12}
+
+#Cumulative Adjusted Volcano Plots
+volcano(l2fcD0, negapvD0, "Cumulative Day 0, FDR Adjusted")
+volcano(l2fcD1, negapvD1, "Cumulative Day 1, FDR Adjusted")
+volcano(l2fcD2, negapvD2, "Cumulative Day 2, FDR Adjusted")
+
+```
+
+The second set of plots show all the B-Cell associated genes in each time period, and lists the significantly up and downregulated genes.
+
+```{r, fig.width=16, fig.height=12}
+#B-Cell Genes Adjusted Volcano Plots
+volcano(l2fcD0, negapvD0, "B-Cell Genes Day 0, FDR Adjusted", bcell == "Yes")
+volcano(l2fcD1, negapvD1, "B-Cell Genes Day 1, FDR Adjusted", bcell == "Yes")
+volcano(l2fcD2, negapvD2, "B-Cell Genes Day 2, FDR Adjusted", bcell == "Yes")
+```
+
+The final set shows volcano plots for genes that share protein functions, given that the subset has at least 10 genes.
+
+During the exploration of the data, a plot was made for B-cell association, every subcellular location, and every protein function, at every time period, resulting in hundreds of volcano plots. To determine which strata were the most significant to look at, the Wilcoxon Rank-Sum test was used to compare the strata's log 2 fold-change and -log p-values to those of the unstratified data.
+
+The Wilcoxon Rank-Sum test determines whether two non-normal datasets originate from the same distribution by ranking observations and comparing the relative ranks. The resulting p-values show the probability of observing differences in ranks as or more extreme as those measured, assuming there truly was no difference in gene expression between the subset and the overall group. Therefore, strata with p-values below 0.05 for both absolute log 2 fold-change and -log p-values have significantly greater magnitudes of differential expression and statistical significance than the background dataset.
+
+Such significance suggests meaningful biological changes within these subsets. Hence, these are the volcano plots shown below, and the genes contained in these volcano plots are used in the discussion. There are no subcellular location plots shown, as there were no plots with significant WIlxocon Rank-Sum tests and substantially differentially expressed genes.
+
+```{r, fig.width=16, fig.height=12}
+
+#Protein Function: Day 0
+for (name in names(functions)) {
+  subset = functions[[name]]
+  if (sum(subset == 1) >= 10) {
+    l2fc_p <- wilcox.test(abs(l2fcD0[subset == 1]), abs(l2fcD0[subset == 0]), alternative = "greater")$p.value
+    pv_p <- wilcox.test(negapvD0[subset == 1], negapvD0[subset == 0], alternative = "greater")$p.value
+    if (p.adjust(l2fc_p, method = "fdr") < 0.05 & p.adjust(pv_p, method = "fdr") < 0.05) {
+      volcano(l2fcD0, negapvD0, paste(name, "Day 0, FDR Adjusted"), subset)
+      print(paste("Absolute Log-2 Fold Change Wilcoxon Rank-Sum Test:", l2fc_p))
+      print(paste("Negative Log-10 Adjusted P-Value Wilcoxon Rank-Sum Test:", pv_p))
+    }
+  }
+}
+```
+
+```{r, fig.width=16, fig.height=12}
+
+#Protein Function: Day 1
+for (name in names(functions)) {
+  subset = functions[[name]]
+  if (sum(subset == 1) >= 10) {
+    l2fc_p <- wilcox.test(abs(l2fcD1[subset == 1]), abs(l2fcD1[subset == 0]), alternative = "greater")$p.value
+    pv_p <- wilcox.test(negapvD1[subset == 1], negapvD1[subset == 0], alternative = "greater")$p.value
+    if (p.adjust(l2fc_p, method = "fdr") < 0.05 & p.adjust(pv_p, method = "fdr") < 0.05) {
+      volcano(l2fcD1, negapvD1, paste(name, "Day 1, FDR Adjusted"), subset)
+      print(paste("Absolute Log-2 Fold Change Wilcoxon Rank-Sum Test:", l2fc_p))
+      print(paste("Negative Log-10 Adjusted P-Value Wilcoxon Rank-Sum Test:", pv_p))
+    }
+  }
+}
+```
+
+```{r, fig.width=16, fig.height=12}
+
+#Protein Function: Day 2
+for (name in names(functions)) {
+  subset = functions[[name]]
+  if (sum(subset == 1) >= 10) {
+    l2fc_p <- wilcox.test(abs(l2fcD2[subset == 1]), abs(l2fcD2[subset == 0]), alternative = "greater")$p.value
+    pv_p <- wilcox.test(negapvD2[subset == 1], negapvD2[subset == 0], alternative = "greater")$p.value
+    if (p.adjust(l2fc_p, method = "fdr") < 0.05 & p.adjust(pv_p, method = "fdr") < 0.05) {
+      volcano(l2fcD2, negapvD2, paste(name, "Day 2, FDR Adjusted"), subset)
+      print(paste("Absolute Log-2 Fold Change Wilcoxon Rank-Sum Test:", l2fc_p))
+      print(paste("Negative Log-10 Adjusted P-Value Wilcoxon Rank-Sum Test:", pv_p))
+    }
+  }
+}
+```
+
+## Statistical Analysis
+
+Perform the statistical analysis or modeling, or any other work to answer the question you posed. For example, it could be a ANOVA test, or a linear regression, or trained a classification model to predict a response variable. Print out the results of your analysis that can be used to answer your questions. Briefly explain what results you are showing. If you performed several analyses, put each one in a separate chunk.
+
+```{r}
+
+```
+
+All models and methods are based on assumptions. Explain what the assumptions are for your model or method, and why it's appropriate for your variables.
+
+```{r}
+
+```
+
+## Discussion
+
+**Proliferation:**
+
+Several of the upregulated genes in apheresis B-cells are involved in cell division and mitosis. CENPW, CENPB, and CENPP are centromere proteins that are significantly upregulated and are very important for ensuring chromosomes separate correctly during cell division. The fact that all three are upregulated suggests that the cells are actively dividing and going through mitosis. Furthermore, CABLES2 and LRR1 also seem to be involved in regulating the cell cycle, which supports this idea. PHF19 is an epigenetic regulator that has been associated with germinal center B-cells, so its upregulation might mean these cells are taking on a more activated, dividing state. 
+
+The limma analysis added a few more genes that strengthen this conclusion. ANP32A, which is involved in nucleocytoplasmic transport and active transcription, was the most statistically significant hit in the entire limma run, which makes it especially noteworthy. Another gene, H2AFZ, is a histone variant that marks actively transcribed regions of the genome and is vital for normal cell proliferation. Its proliferation suggests that the chromatin is in a very open, accessible state; therefore, many genes are being switched on at once. This is expected with a cell that's become highly activated. Furthermore, SARNP and YJU2, both of which are involved in RNA splicing and processing, along with THOC7, which helps export finished mRNA out of the nucleus, and SNAPC1, which activates transcription of the small nuclear RNAs needed to process new transcripts, suggest that the cells are building up the full infrastructure for large-scale gene expression. Overall, this points to a broad and coordinated activation response rather than just a simple increase in cell division. 
+
+**Metabolism**
+
+Many of the upregulated genes are linked to changes in how the cells produce and use energy, which commonly happens when immune cells get activated. The most well-supported gene, MTHFS, which shows up in both the original analysis and the limma run, is involved in folate metabolism, which is important for making nucleotides when cells are dividing quickly. Its upregulation suggests cells are producing more of the materials needed to make DNA, which makes sense if the cells are actively preparing to divide.
+
+Other genes point to increased lipid metabolism. Such as ACAT1 and ACAT2, two enzymes involved in acetyl-CoA and cholesterol metabolism, AGPAT2, which helps build new phospholipids for cell membranes, and FABP5, which transports fatty acids around the cell. SLC1A5, a transporter that brings glutamine into the cell, together with GLUD1, an enzyme that converts glutamine into a molecule that can be used to produce energy, suggests that the cells are actively pulling in and burning glutamine as a fuel source, which is also very common in rapidly dividing cells. On the mitochondrial side, the NDUFB3 and COA3, subunits involved in the electron transport chain, together with GLRX2, which helps maintain the redox balance in mitochondria, suggest the cells are doing more oxidative phosphorylation than usual. 
+
+The limma analysis added much more information to this conclusion. Glycolytic enzymes TPI1 and PGM2 complete the energy production story and show that the cells are running the full glycolytic pathway. NDUFB5, a Complex I subunit, and HIGD1A, a regulator for Complex IV under stress conditions, add more evidence for elevated mitochondrial activity. Upregulation of PSMC1 and PSMC3, both ATPase subunits of the 26S proteasome, means the cells are breaking down and recycling protein at a much higher rate. This is something that actively cycling cells need to do to clear out regulatory proteins and respond quickly to signals. All of this together paints the picture that the cells are in a high-energy, highly activated state, with full metabolic reprogramming happening across multiple pathways all at once.
+
+**B-cell Membrane, Signaling, and Activation Markers:**
+
+Upregulated genes from the t-test demonstrate a cell actively engaging its environment through signaling pathways and membrane interactions. The CD9 plasmablast marker proved to be the strongest single indicator of activation with significance at Day 0, Day 1, and Day 2 – confirmed by both the original t-test analysis and the limma run. Additionally, the TGF-β co-receptor ENG (CD105) was also significant across all three time points, and CD302/LY75, a C-type lectin involved in antigen uptake, was upregulated at Day 2. When viewed together, these three surface molecules exhibit a cell that is both presenting an activated phenotype and primed for antigen handling. 
+
+A known endocytic-machinery cluster of genes, AP2S1, EPN1, REPS2, PACSIN2, plus V-ATPase ATP6V1E1, were all found to be upregulated. This pattern is consistent with active BCR internalization and recycling, a characteristic of stimulated B-cells. TWF2 upregulation from the t-test plus BRK1 and MYL12B from the limma run demonstrate cytoskeleton remodeling and support the activity expected during activation. 
+
+**ER Stress and B-cell Developmental Regulation**
+
+The limma analysis illustrated themes of ER stress and an unfolded protein response. HERPUD1 was the largest-magnitude hit in the limma run. HERPUD1 is induced by the unfolded protein response and drives ER-associated degradation. This could reflect that either apheresis-induced cellular stress activates the UPR or B-cells expand their ER capacity in preparation for antibody secretion. 
+
+Additionally, ZFP36L1 returned a large effect size from the limma run. ZFP36L1 binds to elements in cyclin and transcription factor mRNAs and is a regulator of B-cell developmental checkpoints. ZFP36L1’s strong upregulation may indicate a regulated developmental transition rather than a generic stress response. 
+
+**Conclusion:**
+
+When viewed together, the upregulated genes describe B-cells that have engaged a coordinated activation program in response to apheresis collection. The original t-test performed across three time points (Day 0, Day 1, and Day 2) identify proliferation, metabolism, and membrane signaling/activation as the dominant functional programs. The limma cross-validation analysis at Day 0 strengthened these three themes while also suggesting an ER stress and B-cell developmental regulation response. 
+
+The most credible findings are the cross-validated results from the t-test and limma analysis. CD9 and ENG (CD105) were significant at Day 0 (by both methods), Day 1, and Day 2, suggesting they have the strongest activation signal in the data set. THOC7, PACSIN2, and MTHFS were confirmed at Day 0 by both the t-test and the limma analysis. This convergence despite using different statistical methods supports the reliability of these findings. 
+
+The temporal pattern across the three time points is also informative. Day 0 had 329 significant genes with 15 strongly upregulated, Day 1 peaked at 810 significant genes with 31 strongly upregulated, and Day 2 partially regressed to 471 significant genes with 16 strongly upregulated. The Day 0 limma analysis returned 21 strong hits, indicating that the activation program is already engaged at sample collection. This pattern is consistent with an activation peak at 24 hours post-apheresis rather than a sustained or progressive change. 
+
+Overall, these results directly address the three research questions of this analysis. The analysis found a significant difference in gene expression profiles between apheresis-derived and whole blood-derived B-cells. The temporal pattern suggests that the difference between the two groups is not static across time, but peaks at 24 hours after isolation and partially regresses by 48 hours. This indicates that the time after isolation may have an effect on the gene expression profile. Additionally, the significantly upregulated genes are not random but cluster into specific functional groups: proliferation, metabolism, membrane signaling and activation, and ER stress and B-cell developmental regulation.
+
+## References
+
+List any resources you used, with links or citations.
+
+1.  Waters LR, Ahsan FM, Wolf DM, Shirihai O, Teitell MA. Initial B Cell Activation Induces Metabolic Reprogramming and Mitochondrial Remodeling. *iScience*. 2018. <https://www.sciencedirect.com/science/article/pii/S2589004218300932>
+
+2.  Boothby M, Brookens SK, Raybuck AL, Cho SH. Supplying the trip to antibody production—nutrients, signaling, and the programming of cellular metabolism in the mature B lineage. *Cell Mol Immunol*. 2022. <https://www.nature.com/articles/s41420-025-02403-1>
+
+3.  Hu W, Zhang L, Dong Y, Tian Z, Chen Y, Dong S. Transcription factor Phf19 positively regulates germinal center reactions that underlies its role in rheumatoid arthritis. *Sci Rep*. 2018. <https://pubmed.ncbi.nlm.nih.gov/29423005/>
+
+4.  Vizán P, Gutiérrez A, Espejo I, et al. The Polycomb-associated factor PHF19 controls hematopoietic stem cell state and differentiation. *Sci Adv*. 2020. <https://www.science.org/doi/10.1126/sciadv.abb2745>
+
+5.  Won WJ, Kearney JF. CD9 Is a Unique Marker for Marginal Zone B Cells, B1 Cells, and Plasma Cells in Mice. *J Immunol*. 2002. <https://journals.aai.org/jimmunol/article/168/11/5605/34288>
+
+6.  Yoon SO, Zhang X, Berner P, Choi YS. CD9 is a novel marker for plasma cell precursors in human germinal centers. *Biochem Biophys Res Commun*. 2013. <https://pmc.ncbi.nlm.nih.gov/articles/PMC3563937/>
+
+7.  Zou F, Wang X, Han X, et al. Expression and Function of Tetraspanins and Their Interacting Partners in B Cells. *Front Immunol*. 2018. <https://www.frontiersin.org/journals/immunology/articles/10.3389/fimmu.2018.01606/full>
+
+8.  Galloway A, Saveliev A, Łukasiak S, et al. RNA-binding proteins ZFP36L1 and ZFP36L2 promote cell quiescence. *Science*. 2016. <https://pubmed.ncbi.nlm.nih.gov/27284197/>
+
+9.  Newman R, Ahlfors H, Saveliev A, et al. Maintenance of the marginal-zone B cell compartment specifically requires the RNA-binding protein ZFP36L1. *Nat Immunol*. 2017. <https://www.nature.com/articles/ni.3724>
+
+10. Saveliev A, Bell SE, Turner M. Efficient homing of antibody-secreting cells to the bone marrow requires RNA-binding protein ZFP36L1. *J Exp Med*. 2021. <https://rupress.org/jem/article/218/3/e20200504/211586/>
+
+11. Kokame K, Agarwala KL, Kato H, Miyata T. Herp, a new ubiquitin-like membrane protein induced by endoplasmic reticulum stress. *J Biol Chem*. 2000. <https://www.sciencedirect.com/science/article/pii/S0021925819609975>
+
+12. Ho DV, Chan JY. Induction of Herpud1 expression by ER stress is regulated by Nrf1. *FEBS Lett*. 2015. <https://pmc.ncbi.nlm.nih.gov/articles/PMC10084809/>
+
+13. Quiroga C, Gatica D, Paredes F, et al. Herp depletion protects from protein aggregation by up-regulating autophagy. *Biochim Biophys Acta*. 2013. <https://www.biorxiv.org/content/10.1101/2021.06.14.447273v2.full>
+
+14. Stascheit F, Hotter B, Klose S, et al. Apheresis for the treatment of relapses in MS and NMOSD: reduced antibody reactivities, gene expression changes and potential clinical response indicators. *Front Immunol*. 2025. <https://www.frontiersin.org/journals/immunology/articles/10.3389/fimmu.2025.1531447/full>
+
+15. Ahmadi P, Steffen E, Eilers L, et al. The Acute Effects of Lipoprotein Apheresis on Monocyte Subset Distribution and Transcriptome. *medRxiv*. 2025. <https://www.medrxiv.org/content/10.1101/2025.06.08.25328552>
