@@ -5,7 +5,7 @@ format:
   html:
     self-contained: true
 editor: visual
-echo: False
+echo: True
 ---
 
 ```{r setup}
@@ -23,7 +23,7 @@ library(edgeR)
 Loading in the Data
 
 ```{r}
-gene_expression <- read_excel("../B_Cell_Gene_Expression_Data.xlsx",  col_types = c("text", "skip", "skip", "skip", rep("numeric", 18)))
+gene_expression <- read_excel("../B_Cell_Gene_Expression_Data.xlsx",  col_types = c("text", "text", "skip", "skip", rep("numeric", 18)))
 gene_expression <- column_to_rownames(gene_expression, "GeneSymbol")
 ```
 
@@ -34,10 +34,15 @@ gene_expression <- column_to_rownames(gene_expression, "GeneSymbol")
 #| fig-cap: "We see a more of a dip in the B-cell gene expression level after 24 hours compare to none b-cell genes"
 
 ggplot(gene_expression, aes(x = s1_Apheresis_day0, y = s1_Apheresis_day1)) +
-  geom_point(aes(color=Is_B_Cell)) + geom_smooth(method='lm') +
+  geom_point(aes(color="B-cell?")) + geom_smooth(method='lm') +
   labs(title = "Gene Expression", subtitle = "More words", x="Day0 for patient one", y= "Day1 for patient one")
   scale_color_colorblind()
   
+```
+
+```{r}
+# Removes the b_cells column to keep only gene expression
+gene_expression <- gene_expression[, -1]
 ```
 
 ## Checking if Data is Already Log2p Transformed
@@ -47,6 +52,8 @@ hist(as.numeric(gene_expression[1,]))
 qqnorm(as.numeric(gene_expression[1,]))
 qqline(as.numeric(gene_expression[1, ]))
 ```
+
+Not log transformed at all, looking at the graph. We see huge tails...
 
 ## Metadata dataframe for gene_expression
 
@@ -68,12 +75,13 @@ colData$Sample_Condition <-  factor(paste0(colData$Sample, "_", colData$Conditio
 # Explicitly set Control and Day0 as the baseline references
 colData$Condition <- relevel(colData$Condition, ref = "Control")
 colData$Day <- relevel(colData$Day, ref = "Day0")
+colData$Condition_Day <- relevel(colData$Condition_Day, ref = "Control_Day0")
 
 # Combining everything into one dataframe
 x <- DGEList(gene_expression, samples = colData)
 ```
 
-Since we don't have raw count, we can not use voom. We will try to log transform it ourself
+Since we don't have raw count, we can not use voom. We will try to log transform it ourself.
 
 ```{r}
 exprs_data <- as.matrix(x$counts)
@@ -83,32 +91,36 @@ if(max(exprs_data, na.rm=TRUE) > 50) {
 
 ```
 
-Using Limma instead since we don't have raw data, and Deseq2 only take raw data
+## Visualizing the current clustering
 
 ```{r}
 library(limma)
 library(Glimma) 
 # unsupervised Clustering plot to see if the grouping on PCA space make sense. RUN THIS TO GET A FEEL OF THE DATA AND SEE IF ANY BATCH CORRECTIONS ARE NESSESARY
-glMDSPlot(exprs_data, group = x$samples)
+glMDSPlot(exprs_data, group = x$samples, launch = TRUE)
 
 ```
 
-Creating Design matrix for both day and condition.
+## OK we definitely need batch correction since the samples from the same individual are domination and clustering at very similar PC coordinates
+
+Solution: Include Sample as the batching factor
+
+### Creating Design matrix for day and condition.
 
 ```{r}
-Condition_Day <- x$samples$Condition_Day
-Day <- x$samples$Day
-design <- model.matrix(~Condition_Day)
-colnames(design) <- gsub("Condition_Day", "", colnames(design))
-colnames(design) <- gsub("DayDay", "Day", colnames(design))
 
-view(design)
-#The columns are summarized as the following:
-# Intercept | ConditionApheresis | Day0 | Day2 | CondAph:Day0 | CondAph:Day2
-# unbound intercept | 0 for control | * |  * | Combinations 
+# Creating factor arrays
+Condition_Day <- x$samples$Condition_Day
+Sample <- x$samples$Sample
+Day <- x$samples$Day
+design <- model.matrix(~Sample + Condition_Day) # Added Sample as batching factor
+
+colnames(design) <- c(levels(Condition_Day), paste0("Sample", levels(Sample)[-1]))
+colnames(design) <- gsub("Condition_Day", "", colnames(design))
+colnames(design)[1] <- "Control_Day0" 
 ```
 
-Contrast matrix
+### Contrast matrix
 
 ```{r}
 contr.matrix <- makeContrasts(
@@ -123,52 +135,135 @@ contr.matrix <- makeContrasts(
   Apheresis_Day2vsControl_Day2 = Apheresis_Day2 - Control_Day2,
   levels=colnames(design)
 )
-contr.matrix
 ```
 
 ```{r}
-v <- voom(x, design, normalize.method = "none", plot=TRUE)
-v
-```
-
-```{r}
-vfit <- lmFit(x$counts, design)
+vfit <- lmFit(exprs_data, design)
 vfit <- contrasts.fit(vfit, contrast = contr.matrix) 
 efit <- eBayes(vfit, trend = TRUE) 
 plotSA(efit)
+```
+
+```{r}
+
+top_genes <- topTable(efit, coef = "Apheresis_Day0vsControl_Day0", adjust.method = "BH", number = Inf)
+
+top_genes$Gene <- rownames(top_genes)
+
+# 2. Categorize genes into Up, Down, or Not Significant
+top_genes$Expression <- "Not Significant"
+top_genes$Expression[top_genes$logFC > 1 & top_genes$adj.P.Val < 0.05] <- "Up-regulated"
+top_genes$Expression[top_genes$logFC < -1 & top_genes$adj.P.Val < 0.05] <- "Down-regulated"
+```
+
+```{r}
+library(ggplot2)
+library(ggrepel) # Keeps text labels from overlapping
+
+ggplot(top_genes, aes(x = logFC, y = -log10(P.Value))) +
+  # Draw the gene dots, color-coded by their category
+  geom_point(aes(color = Expression), alpha = 0.8, size = 1.2) +
+  
+  # Custom color palette matching your categories
+  scale_color_manual(values = c("Down-regulated" = "dodgerblue3", 
+                                "Not Significant" = "gray70", 
+                                "Up-regulated" = "firebrick3")) +
+  
+  # Add threshold line guides
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", alpha = 0.5) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black", alpha = 0.5) +
+  
+  # Label the top 10 up-regulated genes automatically without overlapping
+  geom_text_repel(
+    data = head(top_genes[top_genes$Expression == "Up-regulated" | top_genes$Expression == "Down-regulated", ], 20),
+    aes(label = Gene),
+    size = 3,
+    max.overlaps = 15
+  ) +
+  
+  # Clean, minimal presentation theme
+  theme_minimal() +
+  labs(
+    title = "Differential Gene Expression",
+    subtitle = "Apheresis Day 0 vs Control Day 0",
+    x = "Log2 Fold Change",
+    y = "-Log10 Raw p-value",
+    color = "Status"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "right"
+  )
 
 ```
 
 ```{r}
+
 top_genes <- topTable(efit, coef = "Apheresis_Day0vsControl_Day0", adjust.method = "BH", number = Inf)
 significant_top_genes <- top_genes[top_genes$adj.P.Val < 0.05 & top_genes$logFC > 1,]
 print(significant_top_genes)
-write_xlsx(cbind(Index = rownames(significant_top_genes), significant_top_genes), "~/Documents/School/Bio Stuff/Bios_20151/Bio_20251_Final_Project/Output_plot/Apheresis_Day0vsControl_Day0_Deg_Up.xlsx")
+#write_xlsx(cbind(Index = rownames(significant_top_genes), significant_top_genes), "~/Documents/School/Bio Stuff/Bios_20151/Bio_20251_Final_Project/Output_plot/Apheresis_Day0vsControl_Day0_Deg_Up.xlsx")
+
+significant_down_genes <- top_genes[top_genes$adj.P.Val < 0.05 & top_genes$logFC < -1,]
+print(significant_down_genes)
+#write_xlsx(cbind(Index = rownames(significant_down_genes), significant_down_genes), "~/Documents/School/Bio Stuff/Bios_20151/Bio_20251_Final_Project/Output_plot/Apheresis_Day0vsControl_Day0_Deg_Down.xlsx")
+```
+
+## GO term analysis for Down Regulated Genes
+
+```{r}
+library(clusterProfiler)
+library(org.Hs.eg.db) # For Human genome mapping
+
+# Put the genes from your image into a character vector
+down_genes <- c(
+  "SPATA20", "FCRL5", "CLEC20A", "GSDMB", "CORO2B", "FAM177B", 
+  "IGHV6.1", "RGPD1", "CNTNAP2", "DCLK2", "ZNF83", "IGHV3.66", 
+  "DIPK1B", "NPIPA5", "CXorf65", "ZNF107", "SYN3", "PLGLB1", 
+  "IGHV2.70", "SDK2", "DACT1", "FAM167A", "PLD6", "CRIM1", 
+  "SMIM11A", "IGHV4.4"
+)
+down_genes <- gsub("\\.", "-", down_genes)
+
+
+# Run the enrichment for Biological Processes (BP)
+go_results <- enrichGO(
+  gene          = down_genes,
+  OrgDb         = org.Hs.eg.db,
+  keyType       = "SYMBOL",
+  ont           = "BP",   
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05
+)
+
+# View the mapped GO categories
+print(head(go_results))
+
+# Generate a quick barplot of the most enriched functions
+barplot(go_results, showCategory = 10, title = "Down on Day0 GO Term Analysis")
+
+
 ```
 
 ```{r}
-# Summary of deg genes
-up_genes <- efit$genes[decideTests(efit)[, "Apheresis_Day0vsControl_Day0"] == 1, ]
-print(up_genes)
+up_genes <- gsub("\\.", "-", rownames(significant_top_genes))
+
+
+# Run the enrichment for Biological Processes (BP)
+go_results <- enrichGO(
+  gene          = up_genes,
+  OrgDb         = org.Hs.eg.db,
+  keyType       = "SYMBOL",
+  ont           = "BP",   
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05
+)
+
+# View the mapped GO categories
+print(head(go_results))
+
+# Generate a quick barplot of the most enriched functions
+barplot(go_results, showCategory = 10, title = "Up on Day0 GO Term Analysis")
 ```
-
-```{r}
-volcanoplot(efit, coef = c(1), style = "p-value", highlight = 0, names = efit$genes$ID, hl.col="blue",
-            xlab = "Log2 Fold Change", ylab = NULL, pch=16, cex=0.35)
-abline(1,0, col = "red")
-abline(0,-2, col= "blue")
-abline(0,2, col= "blue")
-
-```
-
-```{r}
-tfit <- treat(vfit, lfc=1)
-dt <- decideTests(tfit)
-summary(dt)
-```
-
-```{r}
-glMDPlot(tfit, coef=1, status=de, main=colnames(efit)[1], side.main="ENTREZID", launch=TRUE)
-```
-
-TODO: Conversion to a single factor: Make Combined Design of condition and day (ie use Condition_Day).
