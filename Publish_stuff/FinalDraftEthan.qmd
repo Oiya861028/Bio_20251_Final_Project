@@ -410,6 +410,294 @@ for (name in names(functions)) {
 }
 ```
 
+## Yubin 
+
+```{r setup}
+#| output: False
+# import packages
+library(readxl)
+library(tidyverse)
+library(writexl) 
+library(ggthemes)
+library(DESeq2)
+library(reshape2)
+library(edgeR)
+```
+
+Loading in the Data
+
+```{r}
+# Take only the B-cell rows and gene expression
+gene_expression <- read_excel("../B_Cell_Gene_Expression_Data.xlsx",  col_types = c("text", "text", "skip", "skip", rep("numeric", 18)))
+gene_expression <- column_to_rownames(gene_expression, "GeneSymbol")
+```
+
+## Creating a Simple Visual Plot Comparing Day0 and Day1 Gene Expression Level of Apheresis
+
+```{r eval=FALSE}
+#| title: "Simple Plot"
+#| fig-cap: "Not much changes between day 0 and 1"
+
+ggplot(gene_expression, aes(x = s1_Apheresis_day0, y = s1_Apheresis_day1)) +
+  geom_point(aes(color="B-cell?")) + geom_abline(a = 0, b = 1, col = "blue", lwd = 1) +
+  labs(title = "Gene Expression Apheresis Patient 1", subtitle = "How much the genes correlate from day 0 to day1 (Expression Level)", x="Day0 for patient", y= "Day1 for patient")
+  scale_color_colorblind()
+  
+ggplot(gene_expression, aes(x = s2_Apheresis_day0, y = s2_Apheresis_day1)) +
+  geom_point(aes(color="B-cell?")) + geom_abline(a = 0, b = 1, col = "blue", lwd = 1) +
+  labs(title = "Gene Expression Apheresis Patient 2", subtitle = "How much the genes correlate from day 0 to day1 (Expression Level)", x="Day0 for patient ", y= "Day1 for patient")
+  scale_color_colorblind()
+  
+ggplot(gene_expression, aes(x = s2_Apheresis_day0, y = s2_Apheresis_day1)) +
+  geom_point(aes(color="B-cell?")) + geom_abline(a = 0, b = 1, col = "blue", lwd = 1) +
+  labs(title = "Gene Expression Apheresis Patient 3", subtitle = "How much the genes correlate from day 0 to day1 (Expression Level)", x="Day0 for patient", y= "Day1 for patient")
+  scale_color_colorblind()
+  
+```
+
+```{r}
+# Removes the b_cells column to keep only gene expression for downstream analysis
+gene_expression <- gene_expression[, -1]
+```
+
+## Checking if Data is Already Log2p Transformed
+
+```{r}
+# Looking at the first gene to get a feel
+hist(as.numeric(gene_expression[1,]))
+qqnorm(as.numeric(gene_expression[1,]))
+qqline(as.numeric(gene_expression[1, ]))
+```
+
+Definitely Not log transformed at all, looking at the graph. We see huge tails trailing toward the negatives.
+
+## Metadata dataframe for gene_expression
+
+```{r}
+# Create the metadata dataframe
+colData <- data.frame(
+  row.names = colnames(gene_expression),
+  Sample = factor(rep(c(1,2,3),times=6)),
+  Day = factor(rep(c("Day0","Day1","Day2"), each = 3, times = 2)),
+  Condition = factor(rep(c("Apheresis", "Control"), each = 9))
+  
+)
+
+# A column for each two factor combinations 
+colData$Condition_Day <- factor(paste0(colData$Condition, "_", colData$Day))
+colData$Sample_Day <- factor(paste0(colData$Sample, "_", colData$Day))
+colData$Sample_Condition <-  factor(paste0(colData$Sample, "_", colData$Condition))
+
+# Explicitly set Control and Day0 as the baseline references
+colData$Condition <- relevel(colData$Condition, ref = "Control")
+colData$Day <- relevel(colData$Day, ref = "Day0")
+colData$Condition_Day <- relevel(colData$Condition_Day, ref = "Control_Day0")
+
+# Combining everything into one dataframe
+x <- DGEList(gene_expression, samples = colData)
+```
+
+Since we don't have raw count, we can not use limma-voom. We will try to log transform it ourself.
+
+```{r}
+exprs_data <- as.matrix(x$counts)
+# Checking to see if data is already log2p transformed quantitatively
+if(max(exprs_data, na.rm=TRUE) > 50) {
+  exprs_data <- log2(exprs_data + 1)
+}
+
+```
+
+## Visualizing the Current PC Clustering
+
+```{r}
+library(limma)
+library(Glimma) 
+# unsupervised Clustering plot to see if the grouping on PCA space make sense. RUN THIS TO GET A FEEL OF THE DATA AND SEE IF ANY BATCH CORRECTIONS ARE NESSESARY
+glMDSPlot(exprs_data, group = x$samples, launch = TRUE)
+
+```
+
+## Batching Problem
+
+Ok we definitely do see some batching in the same sample, and we would like to account for those so that different samples are able to be equally contributed to the evaluation of condition over days.
+
+Solution: Include Sample as the batching factor
+
+### Creating Design matrix for day and condition.
+
+```{r}
+# Creating factor arrays
+Condition_Day <- x$samples$Condition_Day
+Sample <- x$samples$Sample
+Day <- x$samples$Day
+# The design matrix
+design <- model.matrix(~Sample + Condition_Day) # Added Sample as batching factor
+
+# Setting Default for Design matrix
+colnames(design) <- c(levels(Condition_Day), paste0("Sample", levels(Sample)[-1]))
+colnames(design) <- gsub("Condition_Day", "", colnames(design))
+colnames(design)[1] <- "Control_Day0" 
+```
+
+### Contrast matrix - There is more than what I am analyzing here
+
+```{r}
+# Since the control_Day0 is the level 0, when comparing to control only the condition to be compared is put down
+contr.matrix <- makeContrasts(
+  Apheresis_Day2vsDay1 = Apheresis_Day2 - Apheresis_Day1,
+  Apheresis_Day1vsDay0 = Apheresis_Day1 - Apheresis_Day0,
+  Apheresis_Day2vsDay0 = Apheresis_Day2 - Apheresis_Day0,
+  Control_Day2vsDay1 = Control_Day2 - Control_Day1,
+  Control_Day1vsDay0 = Control_Day1,
+  Control_Day2vsDay0 = Control_Day2,
+  Apheresis_Day0vsControl_Day0 = Apheresis_Day0,
+  Apheresis_Day1vsControl_Day1 = Apheresis_Day1 - Control_Day1,
+  Apheresis_Day2vsControl_Day2 = Apheresis_Day2 - Control_Day2,
+  levels=colnames(design)
+)
+```
+
+## Linear Regression model 
+
+```{r}
+vfit <- lmFit(exprs_data, design) # Finding slope for every single gene in every group compared to control_day0
+vfit <- contrasts.fit(vfit, contrast = contr.matrix) # Running Contrast 
+efit <- eBayes(vfit, trend = TRUE) # Correct for false positive. trend = TRUE because we did not use raw counts
+plotSA(efit)
+```
+
+## Extracting the Day 0 Conditions For DEG Analysis 
+
+```{r}
+
+top_genes <- topTable(efit, coef = "Apheresis_Day0vsControl_Day0", adjust.method = "BH", number = Inf) # FDR adjustment
+
+top_genes$Gene <- rownames(top_genes) # Setting rowname to be gene names
+
+#Categorize genes into Up, Down, or Not Significant
+top_genes$Expression <- "Not Significant"
+top_genes$Expression[top_genes$logFC > 1 & top_genes$adj.P.Val < 0.05] <- "Up-regulated"
+top_genes$Expression[top_genes$logFC < -1 & top_genes$adj.P.Val < 0.05] <- "Down-regulated"
+```
+
+# Plotting Volcano Plot 
+
+```{r}
+library(ggplot2)
+library(ggrepel) # Keeps text labels from overlapping
+
+ggplot(top_genes, aes(x = logFC, y = -log10(P.Value))) +
+  # Draw the gene dots, color-coded by their category
+  geom_point(aes(color = Expression), alpha = 0.8, size = 1.2) +
+  
+  # Custom color palette matching your categories
+  scale_color_manual(values = c("Down-regulated" = "dodgerblue3", 
+                                "Not Significant" = "gray70", 
+                                "Up-regulated" = "firebrick3")) +
+  
+  # Add threshold line guides
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", alpha = 0.5) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black", alpha = 0.5) +
+  
+  # Label the top 10 up-regulated genes automatically without overlapping
+  geom_text_repel(
+    data = head(top_genes[top_genes$Expression == "Up-regulated" | top_genes$Expression == "Down-regulated", ], 20),
+    aes(label = Gene),
+    size = 3,
+    max.overlaps = 15
+  ) +
+  
+  # Clean, minimal presentation theme
+  theme_minimal() +
+  labs(
+    title = "Differential Gene Expression",
+    subtitle = "Apheresis Day 0 vs Control Day 0",
+    x = "Log2 Fold Change",
+    y = "-Log10 Raw p-value",
+    color = "Status"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "right"
+  )
+
+```
+
+## Printing out DEG genes 
+
+```{r}
+
+top_genes <- topTable(efit, coef = "Apheresis_Day0vsControl_Day0", adjust.method = "BH", number = Inf)
+print("Up Genes")
+significant_top_genes <- top_genes[top_genes$adj.P.Val < 0.05 & top_genes$logFC > 1,]
+print(significant_top_genes)
+#write_xlsx(cbind(Index = rownames(significant_top_genes), significant_top_genes), "~/Documents/School/Bio Stuff/Bios_20151/Bio_20251_Final_Project/Output_plot/Apheresis_Day0vsControl_Day0_Deg_Up.xlsx")
+
+print("Down Genes")
+significant_down_genes <- top_genes[top_genes$adj.P.Val < 0.05 & top_genes$logFC < -1,]
+print(significant_down_genes)
+#write_xlsx(cbind(Index = rownames(significant_down_genes), significant_down_genes), "~/Documents/School/Bio Stuff/Bios_20151/Bio_20251_Final_Project/Output_plot/Apheresis_Day0vsControl_Day0_Deg_Down.xlsx")
+```
+
+## GO Term Analysis
+
+### Down Regulated Genes
+
+```{r}
+library(clusterProfiler)
+library(org.Hs.eg.db) # For Human genome mapping
+
+
+# Extracting gene names and reformatting names for package compatibility
+up_genes <- gsub("\\.", "-", rownames(significant_down_genes))
+
+
+# Run the enrichment for Biological Processes (BP)
+go_results <- enrichGO(
+  gene          = down_genes,
+  OrgDb         = org.Hs.eg.db,
+  keyType       = "SYMBOL",
+  ont           = "BP",   
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05
+)
+
+# View the mapped GO categories
+print(head(go_results))
+
+# Generate a quick barplot of the most enriched functions
+barplot(go_results, showCategory = 10, title = "Down on Day0 GO Term Analysis")
+
+
+```
+
+### Up Regulated Genes
+
+```{r}
+
+up_genes <- gsub("\\.", "-", rownames(significant_top_genes))
+
+
+# Run the enrichment for Biological Processes (BP)
+go_results <- enrichGO(
+  gene          = up_genes,
+  OrgDb         = org.Hs.eg.db,
+  keyType       = "SYMBOL",
+  ont           = "BP",   
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05
+)
+
+# View the mapped GO categories
+print(head(go_results))
+
+# Generate a quick barplot of the most enriched functions
+barplot(go_results, showCategory = 10, title = "Up on Day0 GO Term Analysis")
+```
+
 ## Statistical Analysis
 
 Perform the statistical analysis or modeling, or any other work to answer the question you posed. For example, it could be a ANOVA test, or a linear regression, or trained a classification model to predict a response variable. Print out the results of your analysis that can be used to answer your questions. Briefly explain what results you are showing. If you performed several analyses, put each one in a separate chunk.
